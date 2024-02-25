@@ -2,15 +2,20 @@ pub mod server;
 
 fn main() -> anyhow::Result<()> {
     let mut processor = Processor::new();
+    let start_time = Instant::now();
+
     for query in io::stdin().lines() {
         processor.process_query(query?)?;
     }
+    let end_time = Instant::now();
+    let duration = end_time - start_time;
+    println!("Time taken: {:?}", duration);
     Ok(())
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-use std::{io, str::FromStr};
+use std::{io, str::FromStr, time::Instant};
 
 use rust_decimal::prelude::ToPrimitive;
 
