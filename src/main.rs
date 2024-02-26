@@ -1,92 +1,25 @@
+use std::io;
+
 pub mod server;
 
 fn main() -> anyhow::Result<()> {
-    let processor = Processor::new();
-    let start_time = Instant::now();
-
-    for (i, query) in io::stdin().lines().enumerate() {
-        processor.process_query(query?, i)?;
+    let mut processor = Processor::new();
+    for query in io::stdin().lines() {
+        processor.process_query(query?);
     }
-
-    let end_time = Instant::now();
-    let duration = end_time - start_time;
-    println!("Time taken: {:?}", duration);
     Ok(())
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
 use std::{
-    io,
     str::FromStr,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{self, Receiver, Sender},
     thread::{self},
-    time::Instant,
 };
 
+use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
-
-pub struct Processor {
-    sender: Option<Sender<(String, usize)>>, // Tuple containing query and sequence number
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for Processor {
-    fn drop(&mut self) {
-        let _ = self.sender.take();
-        if let Some(handle) = self.handle.take() {
-            handle.join().unwrap();
-        }
-    }
-}
-
-impl Processor {
-    pub fn new() -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel::<(String, usize)>();
-
-        let handle = thread::spawn(move || {
-            Processor::receiver_loop(receiver);
-        });
-
-        Processor {
-            sender: Some(sender),
-            handle: Some(handle),
-        }
-    }
-
-    fn receiver_loop(receiver: Receiver<(String, usize)>) {
-        let mut results = Vec::new();
-
-        while let Ok((query, seq)) = receiver.recv() {
-            let handle = thread::spawn(move || {
-                let query = Query::from_str(&query).unwrap();
-                query.get_count().unwrap()
-            });
-            results.push((handle, seq));
-        }
-
-        results.sort_by_key(|&(_, seq)| seq);
-        for (result, _) in results {
-            eprintln!("{}", result.join().unwrap());
-        }
-    }
-
-    pub fn process_query(&self, query: String, seq: usize) -> anyhow::Result<()> {
-        match self.sender {
-            Some(ref sender) => {
-                sender.send((query, seq))?;
-            }
-            None => return Err(anyhow::anyhow!("Processor has been dropped")),
-        }
-        Ok(())
-    }
-}
-
-impl Default for Processor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 pub enum Count {
     Trades(usize),
@@ -133,26 +66,26 @@ struct Query {
 }
 
 impl FromStr for Query {
-    type Err = String;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.split_whitespace();
 
-        let count = parts.next().ok_or("Missing count")?;
+        let count = parts.next().ok_or(anyhow!("Missing count"))?;
 
         let start_timestamp_in_seconds = parts
             .next()
-            .ok_or("Missing start timestamp")?
+            .ok_or(anyhow::anyhow!("Missing start timestamp"))?
             .parse()
-            .map_err(|e| format!("Failed to parse start timestamp: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse start timestamp: {}", e))?;
 
         let end_timestamp_in_seconds = parts
             .next()
-            .ok_or("Missing end timestamp")?
+            .ok_or(anyhow::anyhow!("Missing end timestamp"))?
             .parse()
-            .map_err(|e| format!("Failed to parse end timestamp: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse end timestamp: {}", e))?;
 
-        let time_range = TimeRange {
+        let range = TimeRange {
             start_timestamp_in_seconds,
             end_timestamp_in_seconds,
         };
@@ -162,25 +95,23 @@ impl FromStr for Query {
             "B" => QueryType::MarketBuys,
             "S" => QueryType::MarketSells,
             "V" => QueryType::TradingVolume,
-            _ => return Err("Invalid count request: {s}".to_string()),
+            _ => return Err(anyhow!("Invalid count request: {}", s)),
         };
 
-        Ok(Query {
-            query_type,
-            range: time_range,
-        })
+        Ok(Query { query_type, range })
     }
 }
 
 impl Query {
-    pub fn get_count(self) -> anyhow::Result<Count> {
+    pub fn get_count(&self) -> anyhow::Result<Count> {
         let fills = self.get_fills_api()?;
-        match self.query_type {
-            QueryType::TakerTrades => Ok(self.count_taker_trades(fills).into()),
-            QueryType::MarketBuys => Ok(self.count_market_buys(fills).into()),
-            QueryType::MarketSells => Ok(self.count_market_sells(fills).into()),
-            QueryType::TradingVolume => Ok(self.count_trading_volume(fills).into()),
-        }
+        let count = match self.query_type {
+            QueryType::TakerTrades => self.count_taker_trades(&fills).into(),
+            QueryType::MarketBuys => self.count_market_buys(&fills).into(),
+            QueryType::MarketSells => self.count_market_sells(&fills).into(),
+            QueryType::TradingVolume => self.count_trading_volume(&fills).into(),
+        };
+        Ok(count)
     }
 
     fn get_fills_api(&self) -> anyhow::Result<Vec<server::Fill>> {
@@ -191,7 +122,7 @@ impl Query {
         server::get_fills_api(start, end)
     }
 
-    fn count_taker_trades(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_taker_trades(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .map(|v| v.sequence_number)
@@ -199,7 +130,7 @@ impl Query {
             .len()
     }
 
-    fn count_market_buys(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_market_buys(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .filter(|fill| fill.direction == 1)
@@ -208,7 +139,7 @@ impl Query {
             .len()
     }
 
-    fn count_market_sells(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_market_sells(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .filter(|fill| fill.direction == -1)
@@ -217,11 +148,75 @@ impl Query {
             .len()
     }
 
-    fn count_trading_volume(&self, fills: Vec<server::Fill>) -> f64 {
+    fn count_trading_volume(&self, fills: &[server::Fill]) -> f64 {
         fills
             .iter()
             .filter_map(|fill| (fill.price * fill.quantity).to_f64())
             .sum()
+    }
+}
+
+pub struct Processor {
+    sender: Option<Sender<String>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for Processor {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(handle) = self.handle.take() {
+            if let Err(e) = handle.join() {
+                eprintln!("Error joining thread: {:?}", e);
+            }
+        }
+    }
+}
+
+impl Processor {
+    pub fn new() -> Self {
+        let (sender, receiver) = mpsc::channel::<String>();
+
+        let handle = thread::spawn(move || {
+            Self::receiver_loop(receiver);
+        });
+
+        Processor {
+            sender: Some(sender),
+            handle: Some(handle),
+        }
+    }
+
+    fn receiver_loop(receiver: Receiver<String>) {
+        let mut results = Vec::new();
+
+        while let Ok(query) = receiver.recv() {
+            let handle = thread::spawn(move || {
+                let query = Query::from_str(&query).unwrap();
+                query.get_count().unwrap()
+            });
+            results.push(handle);
+        }
+
+        for result in results {
+            println!("{}", result.join().unwrap());
+        }
+    }
+
+    pub fn process_query(&self, query: String) {
+        match self.sender {
+            Some(ref sender) => {
+                if let Err(e) = sender.send(query) {
+                    eprintln!("Failed to send query to processor: {:?}", e);
+                }
+            }
+            None => eprintln!("Attempt to process query failed! Processor sender has been dropped"),
+        }
+    }
+}
+
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
