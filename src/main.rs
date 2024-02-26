@@ -1,11 +1,11 @@
 pub mod server;
 
 fn main() -> anyhow::Result<()> {
-    let mut processor = Processor::new();
+    let processor = Processor::new();
     let start_time = Instant::now();
 
-    for query in io::stdin().lines() {
-        processor.process_query(query?)?;
+    for (i, query) in io::stdin().lines().enumerate() {
+        processor.process_query(query?, i)?;
     }
 
     let end_time = Instant::now();
@@ -16,41 +16,68 @@ fn main() -> anyhow::Result<()> {
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-use std::{io, str::FromStr, thread::JoinHandle, time::Instant};
+use std::{
+    io,
+    str::FromStr,
+    sync::mpsc::{Receiver, Sender},
+    thread::{self},
+    time::Instant,
+};
 
 use rust_decimal::prelude::ToPrimitive;
 
 pub struct Processor {
-    handles: Vec<Option<JoinHandle<Count>>>,
+    sender: Option<Sender<(String, usize)>>, // Tuple containing query and sequence number
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Processor {
     fn drop(&mut self) {
-        for handle in &mut self.handles {
-            if let Some(handle) = std::mem::take(handle) {
-                println!("{}", handle.join().unwrap());
-            }
+        let _ = self.sender.take();
+        if let Some(handle) = self.handle.take() {
+            handle.join().unwrap();
         }
     }
 }
 
 impl Processor {
     pub fn new() -> Self {
-        println!("Processor created");
+        let (sender, receiver) = std::sync::mpsc::channel::<(String, usize)>();
+
+        let handle = thread::spawn(move || {
+            Processor::receiver_loop(receiver);
+        });
 
         Processor {
-            handles: Vec::new(),
+            sender: Some(sender),
+            handle: Some(handle),
         }
     }
 
-    pub fn process_query(&mut self, query: String) -> anyhow::Result<()> {
-        let handle = std::thread::spawn(move || {
-            let query = Query::from_str(&query).unwrap();
-            // .map_err(|err| anyhow::anyhow!(err))?;
-            query.get_count().unwrap()
-            // .map_err(|err| anyhow::anyhow!(err))?;
-        });
-        self.handles.push(Some(handle));
+    fn receiver_loop(receiver: Receiver<(String, usize)>) {
+        let mut results = Vec::new();
+
+        while let Ok((query, seq)) = receiver.recv() {
+            let handle = thread::spawn(move || {
+                let query = Query::from_str(&query).unwrap();
+                query.get_count().unwrap()
+            });
+            results.push((handle, seq));
+        }
+
+        results.sort_by_key(|&(_, seq)| seq);
+        for (result, _) in results {
+            eprintln!("{}", result.join().unwrap());
+        }
+    }
+
+    pub fn process_query(&self, query: String, seq: usize) -> anyhow::Result<()> {
+        match self.sender {
+            Some(ref sender) => {
+                sender.send((query, seq))?;
+            }
+            None => return Err(anyhow::anyhow!("Processor has been dropped")),
+        }
         Ok(())
     }
 }
@@ -146,7 +173,7 @@ impl FromStr for Query {
 }
 
 impl Query {
-    pub fn get_count(self) -> Result<Count, String> {
+    pub fn get_count(self) -> anyhow::Result<Count> {
         let fills = self.get_fills_api()?;
         match self.query_type {
             QueryType::TakerTrades => Ok(self.count_taker_trades(fills).into()),
@@ -156,12 +183,12 @@ impl Query {
         }
     }
 
-    fn get_fills_api(&self) -> Result<Vec<server::Fill>, String> {
+    fn get_fills_api(&self) -> anyhow::Result<Vec<server::Fill>> {
         let (start, end) = (
             self.range.start_timestamp_in_seconds,
             self.range.end_timestamp_in_seconds,
         );
-        server::get_fills_api(start, end).map_err(|err| err.to_string())
+        server::get_fills_api(start, end)
     }
 
     fn count_taker_trades(&self, fills: Vec<server::Fill>) -> usize {
