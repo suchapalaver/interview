@@ -1,41 +1,26 @@
+use std::io;
+
 pub mod server;
 
 fn main() -> anyhow::Result<()> {
     let mut processor = Processor::new();
-    let start_time = Instant::now();
-
     for query in io::stdin().lines() {
-        processor.process_query(query?)?;
+        processor.process_query(query?);
     }
-    let end_time = Instant::now();
-    let duration = end_time - start_time;
-    println!("Time taken: {:?}", duration);
     Ok(())
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-use std::{io, str::FromStr, time::Instant};
+use std::{
+    str::FromStr,
+    thread::{self, JoinHandle},
+};
 
+use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
 
-#[derive(Default)]
-pub struct Processor;
-
-impl Processor {
-    pub fn new() -> Self {
-        Processor
-    }
-
-    pub fn process_query(&mut self, query: String) -> anyhow::Result<Count> {
-        let query = Query::from_str(&query).map_err(|err| anyhow::anyhow!(err))?;
-        let count = query.get_count().map_err(|err| anyhow::anyhow!(err))?;
-        println!("{}", count);
-        Ok(count)
-    }
-}
-
-pub enum Count {
+enum Count {
     Trades(usize),
     Volume(f64),
 }
@@ -80,26 +65,26 @@ struct Query {
 }
 
 impl FromStr for Query {
-    type Err = String;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.split_whitespace();
 
-        let count = parts.next().ok_or("Missing count")?;
+        let count = parts.next().ok_or(anyhow!("Missing count"))?;
 
         let start_timestamp_in_seconds = parts
             .next()
-            .ok_or("Missing start timestamp")?
+            .ok_or(anyhow::anyhow!("Missing start timestamp"))?
             .parse()
-            .map_err(|e| format!("Failed to parse start timestamp: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse start timestamp: {e}"))?;
 
         let end_timestamp_in_seconds = parts
             .next()
-            .ok_or("Missing end timestamp")?
+            .ok_or(anyhow::anyhow!("Missing end timestamp"))?
             .parse()
-            .map_err(|e| format!("Failed to parse end timestamp: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse end timestamp: {e}"))?;
 
-        let time_range = TimeRange {
+        let range = TimeRange {
             start_timestamp_in_seconds,
             end_timestamp_in_seconds,
         };
@@ -109,36 +94,34 @@ impl FromStr for Query {
             "B" => QueryType::MarketBuys,
             "S" => QueryType::MarketSells,
             "V" => QueryType::TradingVolume,
-            _ => return Err("Invalid count request: {s}".to_string()),
+            _ => return Err(anyhow!("Invalid count request: {s}")),
         };
 
-        Ok(Query {
-            query_type,
-            range: time_range,
-        })
+        Ok(Query { query_type, range })
     }
 }
 
 impl Query {
-    pub fn get_count(self) -> Result<Count, String> {
+    fn get_count(&self) -> anyhow::Result<Count> {
         let fills = self.get_fills_api()?;
-        match self.query_type {
-            QueryType::TakerTrades => Ok(self.count_taker_trades(fills).into()),
-            QueryType::MarketBuys => Ok(self.count_market_buys(fills).into()),
-            QueryType::MarketSells => Ok(self.count_market_sells(fills).into()),
-            QueryType::TradingVolume => Ok(self.count_trading_volume(fills).into()),
-        }
+        let count = match self.query_type {
+            QueryType::TakerTrades => self.count_taker_trades(&fills).into(),
+            QueryType::MarketBuys => self.count_market_buys(&fills).into(),
+            QueryType::MarketSells => self.count_market_sells(&fills).into(),
+            QueryType::TradingVolume => self.count_trading_volume(&fills).into(),
+        };
+        Ok(count)
     }
 
-    fn get_fills_api(&self) -> Result<Vec<server::Fill>, String> {
+    fn get_fills_api(&self) -> anyhow::Result<Vec<server::Fill>> {
         let (start, end) = (
             self.range.start_timestamp_in_seconds,
             self.range.end_timestamp_in_seconds,
         );
-        server::get_fills_api(start, end).map_err(|err| err.to_string())
+        server::get_fills_api(start, end)
     }
 
-    fn count_taker_trades(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_taker_trades(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .map(|v| v.sequence_number)
@@ -146,7 +129,7 @@ impl Query {
             .len()
     }
 
-    fn count_market_buys(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_market_buys(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .filter(|fill| fill.direction == 1)
@@ -155,7 +138,7 @@ impl Query {
             .len()
     }
 
-    fn count_market_sells(&self, fills: Vec<server::Fill>) -> usize {
+    fn count_market_sells(&self, fills: &[server::Fill]) -> usize {
         fills
             .iter()
             .filter(|fill| fill.direction == -1)
@@ -164,11 +147,42 @@ impl Query {
             .len()
     }
 
-    fn count_trading_volume(&self, fills: Vec<server::Fill>) -> f64 {
+    fn count_trading_volume(&self, fills: &[server::Fill]) -> f64 {
         fills
             .iter()
             .filter_map(|fill| (fill.price * fill.quantity).to_f64())
             .sum()
+    }
+}
+
+#[derive(Default)]
+pub struct Processor {
+    handles: Vec<JoinHandle<anyhow::Result<Count>>>,
+}
+
+impl Drop for Processor {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            match handle.join() {
+                Ok(Ok(count)) => println!("{count}"),
+                Ok(Err(e)) => eprintln!("Failed to process query: {e:?}"),
+                Err(e) => eprintln!("Failed to join thread when dropping 'Processor': {e:?}"),
+            }
+        }
+    }
+}
+
+impl Processor {
+    pub fn new() -> Self {
+        Processor::default()
+    }
+
+    pub fn process_query(&mut self, query: String) {
+        let handle = thread::spawn(move || -> anyhow::Result<Count> {
+            let query = Query::from_str(&query)?;
+            query.get_count()
+        });
+        self.handles.push(handle);
     }
 }
 
