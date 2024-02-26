@@ -7,6 +7,7 @@ fn main() -> anyhow::Result<()> {
     for query in io::stdin().lines() {
         processor.process_query(query?)?;
     }
+
     let end_time = Instant::now();
     let duration = end_time - start_time;
     println!("Time taken: {:?}", duration);
@@ -15,23 +16,48 @@ fn main() -> anyhow::Result<()> {
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-use std::{io, str::FromStr, time::Instant};
+use std::{io, str::FromStr, thread::JoinHandle, time::Instant};
 
 use rust_decimal::prelude::ToPrimitive;
 
-#[derive(Default)]
-pub struct Processor;
+pub struct Processor {
+    handles: Vec<Option<JoinHandle<Count>>>,
+}
+
+impl Drop for Processor {
+    fn drop(&mut self) {
+        for handle in &mut self.handles {
+            if let Some(handle) = std::mem::take(handle) {
+                println!("{}", handle.join().unwrap());
+            }
+        }
+    }
+}
 
 impl Processor {
     pub fn new() -> Self {
-        Processor
+        println!("Processor created");
+
+        Processor {
+            handles: Vec::new(),
+        }
     }
 
-    pub fn process_query(&mut self, query: String) -> anyhow::Result<Count> {
-        let query = Query::from_str(&query).map_err(|err| anyhow::anyhow!(err))?;
-        let count = query.get_count().map_err(|err| anyhow::anyhow!(err))?;
-        println!("{}", count);
-        Ok(count)
+    pub fn process_query(&mut self, query: String) -> anyhow::Result<()> {
+        let handle = std::thread::spawn(move || {
+            let query = Query::from_str(&query).unwrap();
+            // .map_err(|err| anyhow::anyhow!(err))?;
+            query.get_count().unwrap()
+            // .map_err(|err| anyhow::anyhow!(err))?;
+        });
+        self.handles.push(Some(handle));
+        Ok(())
+    }
+}
+
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
