@@ -174,63 +174,13 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs::File,
-        io::{BufRead, BufReader, Write},
-    };
+    use std::process::Command;
 
-    use tempfile::NamedTempFile;
-
-    use crate::Processor;
-
-    fn create_temporary_file(content: &str) -> NamedTempFile {
-        let mut file = NamedTempFile::new().expect("Failed to create temporary file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write to temporary file");
-        file
-    }
-
-    fn test_read_file_contents() -> BufReader<File> {
-        let file_content = "C 1701386660 1701388446\n\
-                            V 1701255344 1701257371\n\
-                            B 1701100629 1701103957\n\
-                            V 1700849561 1700851499\n\
-                            B 1701308094 1701308363\n\
-                            B 1701194626 1701195835\n\
-                            C 1701082476 1701085013\n\
-                            B 1700854470 1700855525\n\
-                            S 1700890509 1700892422\n\
-                            B 1700845439 1700848389\n";
-
-        let temp_file = create_temporary_file(file_content);
-        let file = temp_file.reopen().unwrap();
-        BufReader::new(file)
-    }
-
-    fn process_input(processor: &mut Processor, input: BufReader<File>) -> Vec<String> {
-        let mut output = Vec::new();
-        for query in input.lines().map(|l| l.unwrap()) {
-            output.push(processor.process_query(query).unwrap().to_string());
-        }
-        output
-    }
-
+    // Since we print to stdout, run the tests with a `test` Makefile directive from the repository root.
     #[test]
-    fn test_processor_with_test_input() {
-        let mut processor = Processor::new();
-        let input = test_read_file_contents();
-        let output = process_input(&mut processor, input);
-        insta::assert_display_snapshot!(output.join("\n"), @r###"
-        249
-        473024.288315
-        414
-        192122.227366
-        3
-        345
-        714
-        115
-        141
-        482
-        "###);
+    fn test_makefile_directive() {
+        let output = Command::new("make").arg("test").output().unwrap();
+
+        assert!(output.status.success())
     }
 }
