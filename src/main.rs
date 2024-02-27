@@ -18,13 +18,14 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex, RwLock},
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
 use anyhow::anyhow;
 use chrono::DateTime;
 use lru::LruCache;
 use rust_decimal::prelude::ToPrimitive;
-use tracing::{error, instrument, subscriber::set_global_default};
+use tracing::{error, instrument, subscriber::set_global_default, trace};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
 fn telemetry() {
@@ -412,9 +413,14 @@ impl Processor {
     }
 
     pub fn process_query(&mut self, query: String) {
+        let span = tracing::span!(tracing::Level::TRACE, "query_execution:", query);
+
         let cache = QueryCache(Arc::clone(&self.cache.0));
 
         let handle = thread::spawn(move || -> anyhow::Result<Option<Count>> {
+            let _enter = span.enter();
+            let start_time = Instant::now();
+
             let query = match Query::from_str(&query) {
                 Ok(query) => query,
                 Err(e) => {
@@ -423,6 +429,10 @@ impl Processor {
                 }
             };
             let count = query.get_count(&cache)?;
+
+            let elapsed = start_time.elapsed();
+            trace!("Query parsing and execution time: {:?}", elapsed);
+
             Ok(count)
         });
         self.handles.push(handle);
