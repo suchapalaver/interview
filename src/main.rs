@@ -13,14 +13,16 @@ fn main() -> anyhow::Result<()> {
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
 use std::{
+    collections::HashMap,
     str::FromStr,
-    sync::mpsc::{self, Receiver, Sender},
-    thread::{self},
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
 };
 
 use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Count {
     Trades(usize),
     Volume(f64),
@@ -103,15 +105,130 @@ impl FromStr for Query {
 }
 
 impl Query {
-    pub fn get_count(&self) -> anyhow::Result<Count> {
-        let fills = self.get_fills_api()?;
-        let count = match self.query_type {
-            QueryType::TakerTrades => self.count_taker_trades(&fills).into(),
-            QueryType::MarketBuys => self.count_market_buys(&fills).into(),
-            QueryType::MarketSells => self.count_market_sells(&fills).into(),
-            QueryType::TradingVolume => self.count_trading_volume(&fills).into(),
-        };
-        Ok(count)
+    pub fn get_count(
+        &self,
+        cache: &Arc<Mutex<HashMap<(i64, i64), Count>>>,
+    ) -> anyhow::Result<Count> {
+        let cache = cache.lock().unwrap();
+
+        match self.query_type {
+            QueryType::TradingVolume => {
+                for (cached_start, cached_end) in cache.keys() {
+                    if *cached_start >= self.range.start_timestamp_in_seconds
+                        && *cached_end <= self.range.end_timestamp_in_seconds
+                    {
+                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
+                        let before_fills = server::get_fills_api(
+                            self.range.start_timestamp_in_seconds,
+                            *cached_start,
+                        )
+                        .unwrap();
+                        let before_count = self.count_trading_volume(&before_fills);
+                        let after_fills =
+                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
+                                .unwrap();
+                        let after_count = self.count_trading_volume(&after_fills);
+
+                        match existing_vol {
+                            Count::Volume(vol) => {
+                                return Ok((vol + before_count + after_count).into())
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                drop(cache);
+                let fills = self.get_fills_api()?;
+                Ok(self.count_trading_volume(&fills).into())
+            }
+            QueryType::MarketBuys => {
+                for (cached_start, cached_end) in cache.keys() {
+                    if *cached_start >= self.range.start_timestamp_in_seconds
+                        && *cached_end <= self.range.end_timestamp_in_seconds
+                    {
+                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
+                        let before_fills = server::get_fills_api(
+                            self.range.start_timestamp_in_seconds,
+                            *cached_start,
+                        )
+                        .unwrap();
+                        let before_count = self.count_market_buys(&before_fills);
+                        let after_fills =
+                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
+                                .unwrap();
+                        let after_count = self.count_market_buys(&after_fills);
+
+                        match existing_vol {
+                            Count::Trades(vol) => {
+                                return Ok((vol + before_count + after_count).into())
+                            }
+                            Count::Volume(_) => unreachable!(),
+                        }
+                    }
+                }
+                drop(cache);
+                let fills = self.get_fills_api()?;
+                Ok(self.count_market_buys(&fills).into())
+            }
+            QueryType::MarketSells => {
+                for (cached_start, cached_end) in cache.keys() {
+                    if *cached_start >= self.range.start_timestamp_in_seconds
+                        && *cached_end <= self.range.end_timestamp_in_seconds
+                    {
+                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
+                        let before_fills = server::get_fills_api(
+                            self.range.start_timestamp_in_seconds,
+                            *cached_start,
+                        )
+                        .unwrap();
+                        let before_count = self.count_market_sells(&before_fills);
+                        let after_fills =
+                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
+                                .unwrap();
+                        let after_count = self.count_market_sells(&after_fills);
+
+                        match existing_vol {
+                            Count::Trades(vol) => {
+                                return Ok((vol + before_count + after_count).into())
+                            }
+                            Count::Volume(_) => unreachable!(),
+                        }
+                    }
+                }
+                drop(cache);
+                let fills = self.get_fills_api()?;
+                Ok(self.count_market_sells(&fills).into())
+            }
+            QueryType::TakerTrades => {
+                for (cached_start, cached_end) in cache.keys() {
+                    if *cached_start >= self.range.start_timestamp_in_seconds
+                        && *cached_end <= self.range.end_timestamp_in_seconds
+                    {
+                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
+                        let before_fills = server::get_fills_api(
+                            self.range.start_timestamp_in_seconds,
+                            *cached_start,
+                        )
+                        .unwrap();
+                        let before_count = self.count_taker_trades(&before_fills);
+                        let after_fills =
+                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
+                                .unwrap();
+                        let after_count = self.count_taker_trades(&after_fills);
+
+                        match existing_vol {
+                            Count::Trades(vol) => {
+                                return Ok((vol + before_count + after_count).into())
+                            }
+                            Count::Volume(_) => unreachable!(),
+                        }
+                    }
+                }
+                drop(cache);
+                let fills = self.get_fills_api()?;
+                Ok(self.count_taker_trades(&fills).into())
+            }
+        }
     }
 
     fn get_fills_api(&self) -> anyhow::Result<Vec<server::Fill>> {
@@ -156,17 +273,18 @@ impl Query {
     }
 }
 
+#[derive(Default)]
 pub struct Processor {
-    sender: Option<Sender<String>>,
-    handle: Option<thread::JoinHandle<()>>,
+    handles: Vec<JoinHandle<Count>>,
+    cache: QueryCache,
 }
 
 impl Drop for Processor {
     fn drop(&mut self) {
-        self.sender.take();
-        if let Some(handle) = self.handle.take() {
-            if let Err(e) = handle.join() {
-                eprintln!("Error joining thread: {:?}", e);
+        for handle in self.handles.drain(..) {
+            match handle.join() {
+                Ok(count) => println!("{}", count),
+                Err(e) => eprintln!("Failed to join thread when dropping 'Processor': {:?}", e),
             }
         }
     }
@@ -174,50 +292,44 @@ impl Drop for Processor {
 
 impl Processor {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel::<String>();
+        Processor::default()
+    }
+
+    pub fn process_query(&mut self, query: String) {
+        let query = Query::from_str(&query).unwrap();
+
+        let cache = match query.query_type {
+            QueryType::MarketBuys => Arc::clone(&self.cache.buys),
+            QueryType::MarketSells => Arc::clone(&self.cache.sells),
+            QueryType::TakerTrades => Arc::clone(&self.cache.trades),
+            QueryType::TradingVolume => Arc::clone(&self.cache.volume),
+        };
 
         let handle = thread::spawn(move || {
-            Self::receiver_loop(receiver);
+            let count = query.get_count(&cache).unwrap();
+            let mut cache = cache.lock().unwrap();
+            cache.insert(
+                (
+                    query.range.start_timestamp_in_seconds,
+                    query.range.end_timestamp_in_seconds,
+                ),
+                count,
+            );
+            count
         });
-
-        Processor {
-            sender: Some(sender),
-            handle: Some(handle),
-        }
-    }
-
-    fn receiver_loop(receiver: Receiver<String>) {
-        let mut results = Vec::new();
-
-        while let Ok(query) = receiver.recv() {
-            let handle = thread::spawn(move || {
-                let query = Query::from_str(&query).unwrap();
-                query.get_count().unwrap()
-            });
-            results.push(handle);
-        }
-
-        for result in results {
-            println!("{}", result.join().unwrap());
-        }
-    }
-
-    pub fn process_query(&self, query: String) {
-        match self.sender {
-            Some(ref sender) => {
-                if let Err(e) = sender.send(query) {
-                    eprintln!("Failed to send query to processor: {:?}", e);
-                }
-            }
-            None => eprintln!("Attempt to process query failed! Processor sender has been dropped"),
-        }
+        self.handles.push(handle);
     }
 }
 
-impl Default for Processor {
-    fn default() -> Self {
-        Self::new()
-    }
+// Define a tolerance value for comparing time ranges
+// const TIME_RANGE_TOLERANCE: i64 = 3600;
+
+#[derive(Default)]
+struct QueryCache {
+    buys: Arc<Mutex<HashMap<(i64, i64), Count>>>,
+    sells: Arc<Mutex<HashMap<(i64, i64), Count>>>,
+    trades: Arc<Mutex<HashMap<(i64, i64), Count>>>,
+    volume: Arc<Mutex<HashMap<(i64, i64), Count>>>,
 }
 
 #[cfg(test)]
