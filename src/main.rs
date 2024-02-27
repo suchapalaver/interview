@@ -19,6 +19,18 @@ use std::{
 
 use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
+use tracing::{error, instrument, subscriber::set_global_default};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
+fn telemetry() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
+    set_global_default(
+        Registry::default()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().pretty()),
+    )
+    .ok();
+}
 
 enum Count {
     Trades(usize),
@@ -155,18 +167,19 @@ impl Query {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Processor {
     handles: Vec<JoinHandle<anyhow::Result<Count>>>,
 }
 
 impl Drop for Processor {
+    #[instrument]
     fn drop(&mut self) {
         for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(Ok(count)) => println!("{count}"),
-                Ok(Err(e)) => eprintln!("Failed to process query: {e:?}"),
-                Err(e) => eprintln!("Failed to join thread when dropping 'Processor': {e:?}"),
+                Ok(Err(e)) => error!("Failed to process query: {e:?}"),
+                Err(e) => error!("Failed to join thread when dropping 'Processor': {e:?}"),
             }
         }
     }
@@ -174,6 +187,7 @@ impl Drop for Processor {
 
 impl Processor {
     pub fn new() -> Self {
+        telemetry();
         Processor::default()
     }
 
