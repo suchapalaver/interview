@@ -19,7 +19,7 @@ use std::{
 
 use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
-use tracing::subscriber::set_global_default;
+use tracing::{error, instrument, subscriber::set_global_default};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 
 fn telemetry() {
@@ -167,18 +167,19 @@ impl Query {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Processor {
     handles: Vec<JoinHandle<anyhow::Result<Count>>>,
 }
 
 impl Drop for Processor {
+    #[instrument]
     fn drop(&mut self) {
         for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(Ok(count)) => println!("{count}"),
-                Ok(Err(e)) => eprintln!("Failed to process query: {e:?}"),
-                Err(e) => eprintln!("Failed to join thread when dropping 'Processor': {e:?}"),
+                Ok(Err(e)) => error!("Failed to process query: {e:?}"),
+                Err(e) => error!("Failed to join thread when dropping 'Processor': {e:?}"),
             }
         }
     }
@@ -186,6 +187,7 @@ impl Drop for Processor {
 
 impl Processor {
     pub fn new() -> Self {
+        telemetry();
         Processor::default()
     }
 
