@@ -117,23 +117,25 @@ impl Query {
                     if *cached_start >= self.range.start_timestamp_in_seconds
                         && *cached_end <= self.range.end_timestamp_in_seconds
                     {
-                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
-                        let before_fills = server::get_fills_api(
-                            self.range.start_timestamp_in_seconds,
-                            *cached_start,
-                        )
-                        .unwrap();
-                        let before_count = self.count_trading_volume(&before_fills);
-                        let after_fills =
-                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
-                                .unwrap();
-                        let after_count = self.count_trading_volume(&after_fills);
+                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
+                            let before_fills = server::get_fills_api(
+                                self.range.start_timestamp_in_seconds,
+                                *cached_start,
+                            )?;
+                            let after_fills = server::get_fills_api(
+                                *cached_end,
+                                self.range.end_timestamp_in_seconds,
+                            )?;
 
-                        match existing_vol {
-                            Count::Volume(vol) => {
-                                return Ok((vol + before_count + after_count).into())
+                            let before_count = self.count_trading_volume(&before_fills);
+                            let after_count = self.count_trading_volume(&after_fills);
+
+                            match existing_vol {
+                                Count::Volume(vol) => {
+                                    return Ok((vol + before_count + after_count).into())
+                                }
+                                Count::Trades(_) => unreachable!(),
                             }
-                            _ => unreachable!(),
                         }
                     }
                 }
@@ -146,23 +148,25 @@ impl Query {
                     if *cached_start >= self.range.start_timestamp_in_seconds
                         && *cached_end <= self.range.end_timestamp_in_seconds
                     {
-                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
-                        let before_fills = server::get_fills_api(
-                            self.range.start_timestamp_in_seconds,
-                            *cached_start,
-                        )
-                        .unwrap();
-                        let before_count = self.count_market_buys(&before_fills);
-                        let after_fills =
-                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
-                                .unwrap();
-                        let after_count = self.count_market_buys(&after_fills);
+                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
+                            let before_fills = server::get_fills_api(
+                                self.range.start_timestamp_in_seconds,
+                                *cached_start,
+                            )?;
+                            let after_fills = server::get_fills_api(
+                                *cached_end,
+                                self.range.end_timestamp_in_seconds,
+                            )?;
 
-                        match existing_vol {
-                            Count::Trades(vol) => {
-                                return Ok((vol + before_count + after_count).into())
+                            let before_count = self.count_market_buys(&before_fills);
+                            let after_count = self.count_market_buys(&after_fills);
+
+                            match existing_vol {
+                                Count::Trades(vol) => {
+                                    return Ok((vol + before_count + after_count).into())
+                                }
+                                Count::Volume(_) => unreachable!(),
                             }
-                            Count::Volume(_) => unreachable!(),
                         }
                     }
                 }
@@ -175,23 +179,25 @@ impl Query {
                     if *cached_start >= self.range.start_timestamp_in_seconds
                         && *cached_end <= self.range.end_timestamp_in_seconds
                     {
-                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
-                        let before_fills = server::get_fills_api(
-                            self.range.start_timestamp_in_seconds,
-                            *cached_start,
-                        )
-                        .unwrap();
-                        let before_count = self.count_market_sells(&before_fills);
-                        let after_fills =
-                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
-                                .unwrap();
-                        let after_count = self.count_market_sells(&after_fills);
+                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
+                            let before_fills = server::get_fills_api(
+                                self.range.start_timestamp_in_seconds,
+                                *cached_start,
+                            )?;
+                            let after_fills = server::get_fills_api(
+                                *cached_end,
+                                self.range.end_timestamp_in_seconds,
+                            )?;
 
-                        match existing_vol {
-                            Count::Trades(vol) => {
-                                return Ok((vol + before_count + after_count).into())
+                            let before_count = self.count_market_sells(&before_fills);
+                            let after_count = self.count_market_sells(&after_fills);
+
+                            match existing_vol {
+                                Count::Trades(vol) => {
+                                    return Ok((vol + before_count + after_count).into())
+                                }
+                                Count::Volume(_) => unreachable!(),
                             }
-                            Count::Volume(_) => unreachable!(),
                         }
                     }
                 }
@@ -204,23 +210,25 @@ impl Query {
                     if *cached_start >= self.range.start_timestamp_in_seconds
                         && *cached_end <= self.range.end_timestamp_in_seconds
                     {
-                        let existing_vol = cache.get(&(*cached_start, *cached_end)).unwrap();
-                        let before_fills = server::get_fills_api(
-                            self.range.start_timestamp_in_seconds,
-                            *cached_start,
-                        )
-                        .unwrap();
-                        let before_count = self.count_taker_trades(&before_fills);
-                        let after_fills =
-                            server::get_fills_api(*cached_end, self.range.end_timestamp_in_seconds)
-                                .unwrap();
-                        let after_count = self.count_taker_trades(&after_fills);
+                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
+                            let before_fills = server::get_fills_api(
+                                self.range.start_timestamp_in_seconds,
+                                *cached_start,
+                            )?;
+                            let after_fills = server::get_fills_api(
+                                *cached_end,
+                                self.range.end_timestamp_in_seconds,
+                            )?;
 
-                        match existing_vol {
-                            Count::Trades(vol) => {
-                                return Ok((vol + before_count + after_count).into())
+                            let before_count = self.count_taker_trades(&before_fills);
+                            let after_count = self.count_taker_trades(&after_fills);
+
+                            match existing_vol {
+                                Count::Trades(vol) => {
+                                    return Ok((vol + before_count + after_count).into())
+                                }
+                                Count::Volume(_) => unreachable!(),
                             }
-                            Count::Volume(_) => unreachable!(),
                         }
                     }
                 }
