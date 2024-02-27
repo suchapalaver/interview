@@ -19,6 +19,18 @@ use std::{
 
 use anyhow::anyhow;
 use rust_decimal::prelude::ToPrimitive;
+use tracing::subscriber::set_global_default;
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
+fn telemetry() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error"));
+    set_global_default(
+        Registry::default()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().pretty()),
+    )
+    .ok();
+}
 
 enum Count {
     Trades(usize),
