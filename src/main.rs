@@ -176,10 +176,18 @@ impl Query {
 mod tests {
     use std::process::Command;
 
-    // Since we print to stdout, run the tests with a `test` Makefile directive from the repository root.
+    /// We print to stdout, so we run the tests with a `test` Makefile directive from the repository root.
+    /// You can also run this test from the terminal using `$ make test`.
     #[test]
-    fn test_makefile_directive() {
+    fn test_test_input() {
         let output = Command::new("make").arg("test").output().unwrap();
+
+        assert!(output.status.success())
+    }
+
+    #[test]
+    fn test_input() {
+        let output = Command::new("make").arg("test-input").output().unwrap();
 
         assert!(output.status.success())
     }
