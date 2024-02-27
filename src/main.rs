@@ -111,22 +111,22 @@ impl Query {
     ) -> anyhow::Result<Count> {
         let cache = cache.lock().unwrap();
 
-        match self.query_type {
-            QueryType::TradingVolume => {
-                for (cached_start, cached_end) in cache.keys() {
-                    if *cached_start >= self.range.start_timestamp_in_seconds
-                        && *cached_end <= self.range.end_timestamp_in_seconds
-                    {
-                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
-                            let before_fills = server::get_fills_api(
-                                self.range.start_timestamp_in_seconds,
-                                *cached_start,
-                            )?;
-                            let after_fills = server::get_fills_api(
-                                *cached_end,
-                                self.range.end_timestamp_in_seconds,
-                            )?;
+        for (cached_start, cached_end) in cache.keys() {
+            if *cached_start >= self.range.start_timestamp_in_seconds
+                && *cached_end <= self.range.end_timestamp_in_seconds
+            {
+                if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
+                    let before_fills = server::get_fills_api(
+                        self.range.start_timestamp_in_seconds,
+                        *cached_start,
+                    )?;
+                    let after_fills = server::get_fills_api(
+                        *cached_end,
+                        self.range.end_timestamp_in_seconds,
+                    )?;
 
+                    match self.query_type {
+                        QueryType::TradingVolume => {
                             let before_count = self.count_trading_volume(&before_fills);
                             let after_count = self.count_trading_volume(&after_fills);
 
@@ -136,28 +136,8 @@ impl Query {
                                 }
                                 Count::Trades(_) => unreachable!(),
                             }
-                        }
-                    }
-                }
-                drop(cache);
-                let fills = self.get_fills_api()?;
-                Ok(self.count_trading_volume(&fills).into())
-            }
-            QueryType::MarketBuys => {
-                for (cached_start, cached_end) in cache.keys() {
-                    if *cached_start >= self.range.start_timestamp_in_seconds
-                        && *cached_end <= self.range.end_timestamp_in_seconds
-                    {
-                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
-                            let before_fills = server::get_fills_api(
-                                self.range.start_timestamp_in_seconds,
-                                *cached_start,
-                            )?;
-                            let after_fills = server::get_fills_api(
-                                *cached_end,
-                                self.range.end_timestamp_in_seconds,
-                            )?;
-
+                        },
+                        QueryType::MarketBuys => {
                             let before_count = self.count_market_buys(&before_fills);
                             let after_count = self.count_market_buys(&after_fills);
 
@@ -167,28 +147,8 @@ impl Query {
                                 }
                                 Count::Volume(_) => unreachable!(),
                             }
-                        }
-                    }
-                }
-                drop(cache);
-                let fills = self.get_fills_api()?;
-                Ok(self.count_market_buys(&fills).into())
-            }
-            QueryType::MarketSells => {
-                for (cached_start, cached_end) in cache.keys() {
-                    if *cached_start >= self.range.start_timestamp_in_seconds
-                        && *cached_end <= self.range.end_timestamp_in_seconds
-                    {
-                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
-                            let before_fills = server::get_fills_api(
-                                self.range.start_timestamp_in_seconds,
-                                *cached_start,
-                            )?;
-                            let after_fills = server::get_fills_api(
-                                *cached_end,
-                                self.range.end_timestamp_in_seconds,
-                            )?;
-
+                        },
+                        QueryType::MarketSells => {
                             let before_count = self.count_market_sells(&before_fills);
                             let after_count = self.count_market_sells(&after_fills);
 
@@ -198,28 +158,8 @@ impl Query {
                                 }
                                 Count::Volume(_) => unreachable!(),
                             }
-                        }
-                    }
-                }
-                drop(cache);
-                let fills = self.get_fills_api()?;
-                Ok(self.count_market_sells(&fills).into())
-            }
-            QueryType::TakerTrades => {
-                for (cached_start, cached_end) in cache.keys() {
-                    if *cached_start >= self.range.start_timestamp_in_seconds
-                        && *cached_end <= self.range.end_timestamp_in_seconds
-                    {
-                        if let Some(existing_vol) = cache.get(&(*cached_start, *cached_end)) {
-                            let before_fills = server::get_fills_api(
-                                self.range.start_timestamp_in_seconds,
-                                *cached_start,
-                            )?;
-                            let after_fills = server::get_fills_api(
-                                *cached_end,
-                                self.range.end_timestamp_in_seconds,
-                            )?;
-
+                        },
+                        QueryType::TakerTrades => {
                             let before_count = self.count_taker_trades(&before_fills);
                             let after_count = self.count_taker_trades(&after_fills);
 
@@ -229,13 +169,18 @@ impl Query {
                                 }
                                 Count::Volume(_) => unreachable!(),
                             }
-                        }
+                        },
                     }
                 }
-                drop(cache);
-                let fills = self.get_fills_api()?;
-                Ok(self.count_taker_trades(&fills).into())
             }
+        }
+
+        let fills = self.get_fills_api()?;
+        match self.query_type {
+            QueryType::TradingVolume => Ok(self.count_trading_volume(&fills).into()),
+            QueryType::MarketBuys => Ok(self.count_market_buys(&fills).into()),
+            QueryType::MarketSells => Ok(self.count_market_sells(&fills).into()),
+            QueryType::TakerTrades => Ok(self.count_taker_trades(&fills).into()),
         }
     }
 
