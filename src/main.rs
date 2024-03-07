@@ -127,10 +127,7 @@ impl FromStr for Query {
 }
 
 impl Query {
-    pub fn get_count(
-        &self,
-        cache: &QueryCache,
-    ) -> anyhow::Result<Option<Count>> {
+    pub fn get_count(&self, cache: &QueryCache) -> anyhow::Result<Option<Count>> {
         let mut cache_lock = cache.lock().unwrap();
 
         let (mut start, mut end) = (
@@ -149,11 +146,11 @@ impl Query {
                 if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
                     let cached_count = match self.query_type {
                         QueryType::TradingVolume => {
-                            self.count_trading_volume(fills, start, end).into()
+                            fills.as_slice().trading_volume(start, end).into()
                         }
-                        QueryType::MarketBuys => self.count_market_buys(fills, start, end).into(),
-                        QueryType::MarketSells => self.count_market_sells(fills, start, end).into(),
-                        QueryType::TakerTrades => self.count_taker_trades(fills, start, end).into(),
+                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
                     };
 
                     match count.as_mut() {
@@ -174,11 +171,11 @@ impl Query {
                 if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
                     let cached_count = match self.query_type {
                         QueryType::TradingVolume => {
-                            self.count_trading_volume(fills, start, end).into()
+                            fills.as_slice().trading_volume(start, end).into()
                         }
-                        QueryType::MarketBuys => self.count_market_buys(fills, start, end).into(),
-                        QueryType::MarketSells => self.count_market_sells(fills, start, end).into(),
-                        QueryType::TakerTrades => self.count_taker_trades(fills, start, end).into(),
+                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
                     };
 
                     match count.as_mut() {
@@ -199,11 +196,11 @@ impl Query {
                 if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
                     let cached_count = match self.query_type {
                         QueryType::TradingVolume => {
-                            self.count_trading_volume(fills, start, end).into()
+                            fills.as_slice().trading_volume(start, end).into()
                         }
-                        QueryType::MarketBuys => self.count_market_buys(fills, start, end).into(),
-                        QueryType::MarketSells => self.count_market_sells(fills, start, end).into(),
-                        QueryType::TakerTrades => self.count_taker_trades(fills, start, end).into(),
+                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
                     };
 
                     match count.as_mut() {
@@ -225,11 +222,11 @@ impl Query {
                 if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
                     let cached_count = match self.query_type {
                         QueryType::TradingVolume => {
-                            self.count_trading_volume(fills, start, end).into()
+                            fills.as_slice().trading_volume(start, end).into()
                         }
-                        QueryType::MarketBuys => self.count_market_buys(fills, start, end).into(),
-                        QueryType::MarketSells => self.count_market_sells(fills, start, end).into(),
-                        QueryType::TakerTrades => self.count_taker_trades(fills, start, end).into(),
+                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
                     };
 
                     match count.as_mut() {
@@ -253,11 +250,11 @@ impl Query {
                 {
                     match self.query_type {
                         QueryType::TradingVolume => {
-                            self.count_trading_volume(fills, start, end).into()
+                            fills.as_slice().trading_volume(start, end).into()
                         }
-                        QueryType::MarketBuys => self.count_market_buys(fills, start, end).into(),
-                        QueryType::MarketSells => self.count_market_sells(fills, start, end).into(),
-                        QueryType::TakerTrades => self.count_taker_trades(fills, start, end).into(),
+                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
                     }
                 } else {
                     continue;
@@ -275,33 +272,29 @@ impl Query {
                 let before_fills = server::get_fills_api(start, *cached_start)?;
                 let before_count: Count = match self.query_type {
                     QueryType::TradingVolume => {
-                        self.count_trading_volume(&before_fills, start, end).into()
+                        before_fills.as_slice().trading_volume(start, end).into()
                     }
-                    QueryType::MarketBuys => {
-                        self.count_market_buys(&before_fills, start, end).into()
-                    }
+                    QueryType::MarketBuys => before_fills.as_slice().market_buys(start, end).into(),
                     QueryType::MarketSells => {
-                        self.count_market_sells(&before_fills, start, end).into()
+                        before_fills.as_slice().market_sells(start, end).into()
                     }
                     QueryType::TakerTrades => {
-                        self.count_taker_trades(&before_fills, start, end).into()
+                        before_fills.as_slice().taker_trades(start, end).into()
                     }
                 };
                 to_update.push(((start, *cached_start), before_fills));
                 let after_fills = server::get_fills_api(*cached_end, end)?;
-                
+
                 let after_count: Count = match self.query_type {
                     QueryType::TradingVolume => {
-                        self.count_trading_volume(&after_fills, start, end).into()
+                        after_fills.as_slice().trading_volume(start, end).into()
                     }
-                    QueryType::MarketBuys => {
-                        self.count_market_buys(&after_fills, start, end).into()
-                    }
+                    QueryType::MarketBuys => after_fills.as_slice().market_buys(start, end).into(),
                     QueryType::MarketSells => {
-                        self.count_market_sells(&after_fills, start, end).into()
+                        after_fills.as_slice().market_sells(start, end).into()
                     }
                     QueryType::TakerTrades => {
-                        self.count_taker_trades(&after_fills, start, end).into()
+                        after_fills.as_slice().taker_trades(start, end).into()
                     }
                 };
                 to_update.push(((*cached_end, end), after_fills));
@@ -327,10 +320,10 @@ impl Query {
             let fills = server::get_fills_api(start, end)?;
 
             let additional_count = match self.query_type {
-                QueryType::TradingVolume => self.count_trading_volume(&fills, start, end).into(),
-                QueryType::MarketBuys => self.count_market_buys(&fills, start, end).into(),
-                QueryType::MarketSells => self.count_market_sells(&fills, start, end).into(),
-                QueryType::TakerTrades => self.count_taker_trades(&fills, start, end).into(),
+                QueryType::TradingVolume => fills.as_slice().trading_volume(start, end).into(),
+                QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
+                QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
+                QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
             };
 
             cache_lock.insert((start, end), fills);
@@ -351,48 +344,49 @@ impl Query {
 
         Ok(count)
     }
+}
 
-    fn count_taker_trades(&self, fills: &[server::Fill], start: i64, end: i64) -> usize {
-        fills
-            .iter()
+trait CountFilter {
+    fn filter_fills<F>(&self, start: i64, end: i64, filter_func: F) -> usize
+    where
+        F: Fn(&server::Fill) -> bool;
+
+    fn taker_trades(&self, start: i64, end: i64) -> usize;
+    fn market_buys(&self, start: i64, end: i64) -> usize;
+    fn market_sells(&self, start: i64, end: i64) -> usize;
+    fn trading_volume(&self, start: i64, end: i64) -> f64;
+}
+
+impl CountFilter for &[server::Fill] {
+    fn filter_fills<F>(&self, start: i64, end: i64, filter_func: F) -> usize
+    where
+        F: Fn(&server::Fill) -> bool,
+    {
+        self.iter()
             .filter(|fill| {
                 fill.time > DateTime::from_timestamp(start, 0).unwrap()
                     && fill.time <= DateTime::from_timestamp(end, 0).unwrap()
             })
+            .filter(|fill| filter_func(fill))
             .map(|v| v.sequence_number)
             .collect::<std::collections::HashSet<_>>()
             .len()
     }
 
-    fn count_market_buys(&self, fills: &[server::Fill], start: i64, end: i64) -> usize {
-        fills
-            .iter()
-            .filter(|fill| {
-                fill.time > DateTime::from_timestamp(start, 0).unwrap()
-                    && fill.time <= DateTime::from_timestamp(end, 0).unwrap()
-            })
-            .filter(|fill| fill.direction == 1)
-            .map(|v| v.sequence_number)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
+    fn taker_trades(&self, start: i64, end: i64) -> usize {
+        self.filter_fills(start, end, |_| true)
     }
 
-    fn count_market_sells(&self, fills: &[server::Fill], start: i64, end: i64) -> usize {
-        fills
-            .iter()
-            .filter(|fill| {
-                fill.time > DateTime::from_timestamp(start, 0).unwrap()
-                    && fill.time <= DateTime::from_timestamp(end, 0).unwrap()
-            })
-            .filter(|fill| fill.direction == -1)
-            .map(|v| v.sequence_number)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
+    fn market_buys(&self, start: i64, end: i64) -> usize {
+        self.filter_fills(start, end, |fill| fill.direction == 1)
     }
 
-    fn count_trading_volume(&self, fills: &[server::Fill], start: i64, end: i64) -> f64 {
-        fills
-            .iter()
+    fn market_sells(&self, start: i64, end: i64) -> usize {
+        self.filter_fills(start, end, |fill| fill.direction == -1)
+    }
+
+    fn trading_volume(&self, start: i64, end: i64) -> f64 {
+        self.iter()
             .filter(|fill| {
                 fill.time > DateTime::from_timestamp(start, 0).unwrap()
                     && fill.time <= DateTime::from_timestamp(end, 0).unwrap()
@@ -404,9 +398,11 @@ impl Query {
 
 type QueryCache = Arc<Mutex<HashMap<(i64, i64), Vec<server::Fill>>>>;
 
+type CountHandles = Vec<JoinHandle<anyhow::Result<Option<Count>>>>;
+
 #[derive(Debug, Default)]
 pub struct Processor {
-    handles: Vec<JoinHandle<anyhow::Result<Option<Count>>>>,
+    handles: CountHandles,
     cache: QueryCache,
 }
 
