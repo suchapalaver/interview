@@ -12,8 +12,8 @@ fn main() -> anyhow::Result<()> {
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
+use std::num::NonZeroUsize;
 use std::{
-    collections::HashMap,
     str::FromStr,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -21,6 +21,7 @@ use std::{
 
 use anyhow::anyhow;
 use chrono::DateTime;
+use lru::LruCache;
 use rust_decimal::prelude::ToPrimitive;
 use tracing::{error, instrument, subscriber::set_global_default};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -146,12 +147,8 @@ impl Query {
         let mut to_update = Vec::new();
         let mut done = false;
 
-        for (cached_start, cached_end) in cache_lock.keys() {
+        for ((cached_start, cached_end), fills) in cache_lock.iter() {
             if start <= *cached_end && end >= *cached_start {
-                let fills = cache_lock
-                    .get(&(*cached_start, *cached_end))
-                    .ok_or_else(|| anyhow::anyhow!("Cache inconsistency"))?;
-
                 let cached_count = self.count_from_range(fills, start, end);
 
                 if let Some(c) = count.as_mut() {
@@ -198,7 +195,7 @@ impl Query {
 
             let additional_count = self.count_from_range(&fills, start, end);
 
-            cache_lock.insert((start, end), fills);
+            cache_lock.put((start, end), fills);
 
             if let Some(c) = count.as_mut() {
                 c.add(additional_count);
@@ -208,7 +205,7 @@ impl Query {
         }
 
         for (range, fills) in to_update {
-            cache_lock.insert(range, fills);
+            cache_lock.put(range, fills);
         }
 
         Ok(count)
@@ -265,11 +262,13 @@ impl CountFilter for &[server::Fill] {
     }
 }
 
-type QueryCache = Arc<Mutex<HashMap<(i64, i64), Vec<server::Fill>>>>;
-
 type CountHandles = Vec<JoinHandle<anyhow::Result<Option<Count>>>>;
 
-#[derive(Debug, Default)]
+type QueryCache = Arc<Mutex<LruCache<(i64, i64), Vec<server::Fill>>>>;
+
+const CACHE_SIZE: usize = 10_000;
+
+#[derive(Debug)]
 pub struct Processor {
     handles: CountHandles,
     cache: QueryCache,
@@ -289,10 +288,21 @@ impl Drop for Processor {
     }
 }
 
+impl Default for Processor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Processor {
     pub fn new() -> Self {
         telemetry();
-        Processor::default()
+        Processor {
+            handles: Vec::new(),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(CACHE_SIZE).unwrap(),
+            ))),
+        }
     }
 
     pub fn process_query(&mut self, query: String) {
