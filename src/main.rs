@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 
 pub mod server;
@@ -79,12 +80,6 @@ struct TimeRange {
     end_timestamp_in_seconds: i64,
 }
 
-impl From<(i64, i64)> for TimeRange {
-    fn from(range: (i64, i64)) -> Self {
-        TimeRange::new(range.0, range.1)
-    }
-}
-
 impl TimeRange {
     fn new(start_timestamp_in_seconds: i64, end_timestamp_in_seconds: i64) -> Self {
         Self {
@@ -94,6 +89,13 @@ impl TimeRange {
     }
 }
 
+impl From<(i64, i64)> for TimeRange {
+    fn from(range: (i64, i64)) -> Self {
+        TimeRange::new(range.0, range.1)
+    }
+}
+
+#[derive(Debug)]
 enum QueryType {
     TakerTrades,
     MarketBuys,
@@ -153,108 +155,131 @@ impl Query {
         }
     }
 
+    fn time_slots_map(&self) -> HashMap<i64, (i64, i64)> {
+        let mut time_slots_map = HashMap::new();
+        let mut current_time = self.range.start_timestamp_in_seconds;
+        let slot_size = SLOT_SIZE;
+
+        while current_time < self.range.end_timestamp_in_seconds {
+            let half_hour_slot = current_time / slot_size * slot_size;
+            let mut next_time = half_hour_slot + slot_size;
+            if next_time > self.range.end_timestamp_in_seconds {
+                next_time = self.range.end_timestamp_in_seconds;
+            }
+            time_slots_map.insert(half_hour_slot, (current_time, next_time));
+            current_time = next_time;
+        }
+        time_slots_map
+    }
+
     pub fn get_count(&self, cache: &QueryCache) -> anyhow::Result<Option<Count>> {
-        let mut cache_lock = cache.lock().unwrap();
-        let mut query_range = self.range;
         let mut count: Option<Count> = None;
-        let mut to_update = Vec::new();
-        let mut done = false;
 
-        for (cached_range, fills) in cache_lock.iter() {
-            if query_range.start_timestamp_in_seconds <= cached_range.end_timestamp_in_seconds
-                && query_range.end_timestamp_in_seconds >= cached_range.start_timestamp_in_seconds
+        let time_slots_map = self.time_slots_map();
+
+        for (time_slot, (query_start, query_end)) in &time_slots_map {
+            let mut query_start = *query_start;
+            let mut query_end = *query_end;
+            let mut to_update: Vec<(TimeRange, Vec<server::Fill>)> = Vec::new();
             {
-                let cached_count = self.count_from_range(fills, query_range);
+                // Acquire a write lock on the cache for the specific time slot.
+                let mut cache_lock = cache.0.lock().unwrap();
 
-                if let Some(c) = count.as_mut() {
-                    c.add(cached_count);
-                } else {
-                    count = Some(cached_count);
-                }
+                if let Some(cached_range_fill_map) = cache_lock.get(time_slot) {
+                    for (cached_range, fills) in cached_range_fill_map.iter() {
+                        if query_start <= cached_range.end_timestamp_in_seconds
+                            && query_end >= cached_range.start_timestamp_in_seconds
+                        {
+                            let cached_count = self.count_from_range(fills, *cached_range);
 
-                if query_range.start_timestamp_in_seconds >= cached_range.start_timestamp_in_seconds
-                    && query_range.end_timestamp_in_seconds <= cached_range.end_timestamp_in_seconds
-                {
-                    done = true;
-                    break;
-                } else if query_range.start_timestamp_in_seconds
-                    <= cached_range.start_timestamp_in_seconds
-                    && query_range.end_timestamp_in_seconds >= cached_range.end_timestamp_in_seconds
-                {
-                    let before_fills = server::get_fills_api(
-                        query_range.start_timestamp_in_seconds,
-                        cached_range.start_timestamp_in_seconds,
-                    )?;
-                    let after_fills = server::get_fills_api(
-                        cached_range.end_timestamp_in_seconds,
-                        query_range.end_timestamp_in_seconds,
-                    )?;
+                            if let Some(c) = count.as_mut() {
+                                c.add(cached_count);
+                            } else {
+                                count = Some(cached_count);
+                            }
 
-                    let before_count = self.count_from_range(&before_fills, query_range);
-                    to_update.push((
-                        (
-                            query_range.start_timestamp_in_seconds,
-                            cached_range.start_timestamp_in_seconds,
-                        )
-                            .into(),
-                        before_fills,
-                    ));
+                            if query_start >= cached_range.start_timestamp_in_seconds
+                                && query_end <= cached_range.end_timestamp_in_seconds
+                            {
+                                // Break out if the query range is fully covered by the cached range.
+                                break;
+                            } else if query_start <= cached_range.start_timestamp_in_seconds
+                                && query_end >= cached_range.end_timestamp_in_seconds
+                            {
+                                // Split the query range into before and after the cached range.
+                                let before_fills = server::get_fills_api(
+                                    query_start,
+                                    cached_range.start_timestamp_in_seconds,
+                                )?;
+                                let after_fills = server::get_fills_api(
+                                    cached_range.end_timestamp_in_seconds,
+                                    query_end,
+                                )?;
 
-                    let after_count = self.count_from_range(&after_fills, query_range);
-                    to_update.push((
-                        (
-                            cached_range.end_timestamp_in_seconds,
-                            query_range.end_timestamp_in_seconds,
-                        )
-                            .into(),
-                        after_fills,
-                    ));
+                                let before_count = self.count_from_range(
+                                    &before_fills,
+                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
+                                );
+                                let after_count = self.count_from_range(
+                                    &after_fills,
+                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
+                                );
 
-                    if let Some(c) = count.as_mut() {
-                        c.add(before_count);
-                        c.add(after_count);
-                    } else {
-                        count = Some(before_count);
-                        count.unwrap().add(after_count);
+                                to_update.push((
+                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
+                                    before_fills,
+                                ));
+                                to_update.push((
+                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
+                                    after_fills,
+                                ));
+
+                                if let Some(c) = count.as_mut() {
+                                    c.add(before_count);
+                                    c.add(after_count);
+                                } else {
+                                    count = Some(before_count);
+                                    count.unwrap().add(after_count);
+                                }
+
+                                // Break out after processing the split ranges.
+                                break;
+                            } else if query_start <= cached_range.start_timestamp_in_seconds
+                                && query_end <= cached_range.end_timestamp_in_seconds
+                            {
+                                // Update query range to exclude the part that is already cached.
+                                query_end = cached_range.start_timestamp_in_seconds;
+                                continue;
+                            } else if query_start >= cached_range.start_timestamp_in_seconds
+                                && query_end >= cached_range.end_timestamp_in_seconds
+                            {
+                                // Update query range to exclude the part that is already cached.
+                                query_start = cached_range.end_timestamp_in_seconds;
+                                continue;
+                            }
+                        }
                     }
-
-                    done = true;
-                    break;
-                } else if query_range.start_timestamp_in_seconds
-                    <= cached_range.start_timestamp_in_seconds
-                    && query_range.end_timestamp_in_seconds <= cached_range.end_timestamp_in_seconds
-                {
-                    query_range.end_timestamp_in_seconds = cached_range.start_timestamp_in_seconds;
-                    continue;
-                } else if query_range.start_timestamp_in_seconds
-                    >= cached_range.start_timestamp_in_seconds
-                    && query_range.end_timestamp_in_seconds >= cached_range.end_timestamp_in_seconds
-                {
-                    query_range.start_timestamp_in_seconds = cached_range.end_timestamp_in_seconds;
-                    continue;
                 }
             }
-        }
 
-        if !done {
-            let fills = server::get_fills_api(
-                query_range.start_timestamp_in_seconds,
-                query_range.end_timestamp_in_seconds,
-            )?;
+            let remaining_fills = server::get_fills_api(query_start, query_end)?;
 
-            let additional_count = self.count_from_range(&fills, query_range);
-
-            cache_lock.put(query_range, fills);
+            let remaining_count =
+                self.count_from_range(&remaining_fills, (query_start, query_end).into());
 
             if let Some(c) = count.as_mut() {
-                c.add(additional_count);
+                c.add(remaining_count);
             } else {
-                count = Some(additional_count);
+                count = Some(remaining_count);
             }
-        }
 
-        for (range, fills) in to_update {
-            cache_lock.put(range, fills);
+            let mut cache_lock = cache.0.lock().unwrap();
+
+            let cache_entry = cache_lock.get_or_insert_mut(*time_slot, HashMap::new);
+
+            for (range, fills) in to_update {
+                cache_entry.insert(range, fills);
+            }
         }
 
         Ok(count)
@@ -315,9 +340,12 @@ impl CountFilter for &[server::Fill] {
 
 type CountHandles = Vec<JoinHandle<anyhow::Result<Option<Count>>>>;
 
-type QueryCache = Arc<Mutex<LruCache<TimeRange, Vec<server::Fill>>>>;
-
+type Cache = LruCache<Slot, HashMap<TimeRange, Vec<server::Fill>>>;
+struct QueryCache(Arc<Mutex<Cache>>);
 const CACHE_SIZE: usize = 10_000;
+
+type Slot = i64;
+const SLOT_SIZE: i64 = 4500;
 
 pub struct Processor {
     handles: CountHandles,
@@ -349,14 +377,14 @@ impl Processor {
         telemetry();
         Processor {
             handles: Vec::new(),
-            cache: Arc::new(Mutex::new(LruCache::new(
+            cache: QueryCache(Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_SIZE).unwrap(),
-            ))),
+            )))),
         }
     }
 
     pub fn process_query(&mut self, query: String) {
-        let cache = Arc::clone(&self.cache);
+        let cache = QueryCache(Arc::clone(&self.cache.0));
 
         let handle = thread::spawn(move || -> anyhow::Result<Option<Count>> {
             let query = match Query::from_str(&query) {
