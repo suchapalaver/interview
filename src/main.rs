@@ -127,214 +127,83 @@ impl FromStr for Query {
 }
 
 impl Query {
+    fn count_from_range(&self, fills: &[server::Fill], start: i64, end: i64) -> Count {
+        match self.query_type {
+            QueryType::TradingVolume => fills.trading_volume(start, end).into(),
+            QueryType::MarketBuys => fills.market_buys(start, end).into(),
+            QueryType::MarketSells => fills.market_sells(start, end).into(),
+            QueryType::TakerTrades => fills.taker_trades(start, end).into(),
+        }
+    }
+
     pub fn get_count(&self, cache: &QueryCache) -> anyhow::Result<Option<Count>> {
         let mut cache_lock = cache.lock().unwrap();
-
         let (mut start, mut end) = (
             self.range.start_timestamp_in_seconds,
             self.range.end_timestamp_in_seconds,
         );
-
         let mut count: Option<Count> = None;
-
         let mut to_update = Vec::new();
-
         let mut done = false;
 
         for (cached_start, cached_end) in cache_lock.keys() {
-            if start == *cached_start && end == *cached_end {
-                if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
-                    let cached_count = match self.query_type {
-                        QueryType::TradingVolume => {
-                            fills.as_slice().trading_volume(start, end).into()
-                        }
-                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-                    };
+            if start <= *cached_end && end >= *cached_start {
+                let fills = cache_lock
+                    .get(&(*cached_start, *cached_end))
+                    .ok_or_else(|| anyhow::anyhow!("Cache inconsistency"))?;
 
-                    match count.as_mut() {
-                        Some(c) => {
-                            c.add(cached_count);
-                        }
-                        None => {
-                            count = Some(cached_count);
-                        }
-                    }
+                let cached_count = self.count_from_range(fills, start, end);
 
-                    // We've covered the entire range we need, so we can return the count.
-                    done = true;
-                    break;
-                }
-            } else if start >= *cached_start && end <= *cached_end {
-                // If the start is after and the end is before the range we have cached:
-                if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
-                    let cached_count = match self.query_type {
-                        QueryType::TradingVolume => {
-                            fills.as_slice().trading_volume(start, end).into()
-                        }
-                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-                    };
-
-                    match count.as_mut() {
-                        Some(c) => {
-                            c.add(cached_count);
-                        }
-                        None => {
-                            count = Some(cached_count);
-                        }
-                    }
-
-                    // We've covered the entire range we need, so we can return the count.
-                    done = true;
-                    break;
-                }
-            } else if start <= *cached_start && end >= *cached_start && end <= *cached_end {
-                // If the start is before and the end is within the range we have cached:
-                if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
-                    let cached_count = match self.query_type {
-                        QueryType::TradingVolume => {
-                            fills.as_slice().trading_volume(start, end).into()
-                        }
-                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-                    };
-
-                    match count.as_mut() {
-                        Some(c) => {
-                            c.add(cached_count);
-                        }
-                        None => {
-                            count = Some(cached_count);
-                        }
-                    }
-
-                    end = *cached_start;
-
-                    // We know there's still more to cover, so we can continue.
-                    continue;
-                }
-            } else if start >= *cached_start && start <= *cached_end && end >= *cached_end {
-                // If the start is within the range we have cached, but the end is after:
-                if let Some(fills) = cache_lock.get(&(*cached_start, *cached_end)) {
-                    let cached_count = match self.query_type {
-                        QueryType::TradingVolume => {
-                            fills.as_slice().trading_volume(start, end).into()
-                        }
-                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-                    };
-
-                    match count.as_mut() {
-                        Some(c) => {
-                            c.add(cached_count);
-                        }
-                        None => {
-                            count = Some(cached_count);
-                        }
-                    }
-
-                    start = *cached_end;
-
-                    // We know there's still more to cover, so we can continue.
-                    continue;
-                }
-            } else if start <= *cached_start && end >= *cached_end {
-                // If the start is before and the end is after the range we have cached:
-                let cached_count = if let Some(fills) =
-                    cache_lock.get(&(*cached_start, *cached_end))
-                {
-                    match self.query_type {
-                        QueryType::TradingVolume => {
-                            fills.as_slice().trading_volume(start, end).into()
-                        }
-                        QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                        QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                        QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-                    }
+                if let Some(c) = count.as_mut() {
+                    c.add(cached_count);
                 } else {
-                    continue;
-                };
-
-                match count.as_mut() {
-                    Some(c) => {
-                        c.add(cached_count);
-                    }
-                    None => {
-                        count = Some(cached_count);
-                    }
+                    count = Some(cached_count);
                 }
 
-                let before_fills = server::get_fills_api(start, *cached_start)?;
-                let before_count: Count = match self.query_type {
-                    QueryType::TradingVolume => {
-                        before_fills.as_slice().trading_volume(start, end).into()
-                    }
-                    QueryType::MarketBuys => before_fills.as_slice().market_buys(start, end).into(),
-                    QueryType::MarketSells => {
-                        before_fills.as_slice().market_sells(start, end).into()
-                    }
-                    QueryType::TakerTrades => {
-                        before_fills.as_slice().taker_trades(start, end).into()
-                    }
-                };
-                to_update.push(((start, *cached_start), before_fills));
-                let after_fills = server::get_fills_api(*cached_end, end)?;
+                if start >= *cached_start && end <= *cached_end {
+                    done = true;
+                    break;
+                } else if start <= *cached_start && end >= *cached_end {
+                    let before_fills = server::get_fills_api(start, *cached_start)?;
+                    let after_fills = server::get_fills_api(*cached_end, end)?;
 
-                let after_count: Count = match self.query_type {
-                    QueryType::TradingVolume => {
-                        after_fills.as_slice().trading_volume(start, end).into()
-                    }
-                    QueryType::MarketBuys => after_fills.as_slice().market_buys(start, end).into(),
-                    QueryType::MarketSells => {
-                        after_fills.as_slice().market_sells(start, end).into()
-                    }
-                    QueryType::TakerTrades => {
-                        after_fills.as_slice().taker_trades(start, end).into()
-                    }
-                };
-                to_update.push(((*cached_end, end), after_fills));
-                match count.as_mut() {
-                    Some(c) => {
+                    let before_count = self.count_from_range(&before_fills, start, end);
+                    to_update.push(((start, *cached_start), before_fills));
+
+                    let after_count = self.count_from_range(&after_fills, start, end);
+                    to_update.push(((*cached_end, end), after_fills));
+
+                    if let Some(c) = count.as_mut() {
                         c.add(before_count);
                         c.add(after_count);
-                    }
-                    None => {
+                    } else {
                         count = Some(before_count);
                         count.unwrap().add(after_count);
                     }
-                }
 
-                done = true;
-                break;
-            } else {
-                continue;
+                    done = true;
+                    break;
+                } else if start <= *cached_start && end <= *cached_end {
+                    end = *cached_start;
+                    continue;
+                } else if start >= *cached_start && end >= *cached_end {
+                    start = *cached_end;
+                    continue;
+                }
             }
         }
 
         if !done {
             let fills = server::get_fills_api(start, end)?;
 
-            let additional_count = match self.query_type {
-                QueryType::TradingVolume => fills.as_slice().trading_volume(start, end).into(),
-                QueryType::MarketBuys => fills.as_slice().market_buys(start, end).into(),
-                QueryType::MarketSells => fills.as_slice().market_sells(start, end).into(),
-                QueryType::TakerTrades => fills.as_slice().taker_trades(start, end).into(),
-            };
+            let additional_count = self.count_from_range(&fills, start, end);
 
             cache_lock.insert((start, end), fills);
 
-            match count.as_mut() {
-                Some(c) => {
-                    c.add(additional_count);
-                }
-                None => {
-                    count = Some(additional_count);
-                }
+            if let Some(c) = count.as_mut() {
+                c.add(additional_count);
+            } else {
+                count = Some(additional_count);
             }
         }
 
