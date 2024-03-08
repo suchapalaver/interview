@@ -190,12 +190,13 @@ impl Query {
             if let Some(cached_range_fill_map) = cache_lock {
                 let cached_range_fill_map = cached_range_fill_map.read().unwrap();
                 for (cached_range, fills) in cached_range_fill_map.iter() {
-                    if query_start <= cached_range.end_timestamp_in_seconds
-                        && query_end >= cached_range.start_timestamp_in_seconds
-                    {
-                        if query_start >= cached_range.start_timestamp_in_seconds
-                            && query_end <= cached_range.end_timestamp_in_seconds
-                        {
+                    let (cached_start, cached_end) = (
+                        cached_range.start_timestamp_in_seconds,
+                        cached_range.end_timestamp_in_seconds,
+                    );
+
+                    if query_start <= cached_end && query_end >= cached_start {
+                        if query_start >= cached_start && query_end <= cached_end {
                             let cached_count =
                                 self.count_from_range(fills, (query_start, query_end).into());
 
@@ -208,17 +209,9 @@ impl Query {
                             // Break out if the query range is fully covered by the cached range.
                             slot_done = true;
                             break;
-                        } else if query_start <= cached_range.start_timestamp_in_seconds
-                            && query_end >= cached_range.end_timestamp_in_seconds
-                        {
-                            let cached_count = self.count_from_range(
-                                fills,
-                                (
-                                    cached_range.start_timestamp_in_seconds,
-                                    cached_range.end_timestamp_in_seconds,
-                                )
-                                    .into(),
-                            );
+                        } else if query_start <= cached_start && query_end >= cached_end {
+                            let cached_count =
+                                self.count_from_range(fills, (cached_start, cached_end).into());
 
                             if let Some(c) = count.as_mut() {
                                 c.add(cached_count);
@@ -227,32 +220,18 @@ impl Query {
                             }
 
                             // Split the query range into before and after the cached range.
-                            let before_fills = server::get_fills_api(
-                                query_start,
-                                cached_range.start_timestamp_in_seconds,
-                            )?;
-                            let after_fills = server::get_fills_api(
-                                cached_range.end_timestamp_in_seconds,
-                                query_end,
-                            )?;
+                            let before_fills = server::get_fills_api(query_start, cached_start)?;
+                            let after_fills = server::get_fills_api(cached_end, query_end)?;
 
                             let before_count = self.count_from_range(
                                 &before_fills,
-                                (query_start, cached_range.start_timestamp_in_seconds).into(),
+                                (query_start, cached_start).into(),
                             );
-                            let after_count = self.count_from_range(
-                                &after_fills,
-                                (cached_range.end_timestamp_in_seconds, query_end).into(),
-                            );
+                            let after_count =
+                                self.count_from_range(&after_fills, (cached_end, query_end).into());
 
-                            to_update.push((
-                                (query_start, cached_range.start_timestamp_in_seconds).into(),
-                                before_fills,
-                            ));
-                            to_update.push((
-                                (cached_range.end_timestamp_in_seconds, query_end).into(),
-                                after_fills,
-                            ));
+                            to_update.push(((query_start, cached_start).into(), before_fills));
+                            to_update.push(((cached_end, query_end).into(), after_fills));
 
                             if let Some(c) = count.as_mut() {
                                 c.add(before_count);
@@ -265,13 +244,9 @@ impl Query {
                             // Break out after processing the split ranges.
                             slot_done = true;
                             break;
-                        } else if query_start <= cached_range.start_timestamp_in_seconds
-                            && query_end <= cached_range.end_timestamp_in_seconds
-                        {
-                            let cached_count = self.count_from_range(
-                                fills,
-                                (cached_range.start_timestamp_in_seconds, query_end).into(),
-                            );
+                        } else if query_start <= cached_start && query_end <= cached_end {
+                            let cached_count =
+                                self.count_from_range(fills, (cached_start, query_end).into());
 
                             if let Some(c) = count.as_mut() {
                                 c.add(cached_count);
@@ -280,15 +255,11 @@ impl Query {
                             }
 
                             // Update query range to exclude the part that is already cached.
-                            query_end = cached_range.start_timestamp_in_seconds;
+                            query_end = cached_start;
                             continue;
-                        } else if query_start >= cached_range.start_timestamp_in_seconds
-                            && query_end >= cached_range.end_timestamp_in_seconds
-                        {
-                            let cached_count = self.count_from_range(
-                                fills,
-                                (query_start, cached_range.end_timestamp_in_seconds).into(),
-                            );
+                        } else if query_start >= cached_start && query_end >= cached_end {
+                            let cached_count =
+                                self.count_from_range(fills, (query_start, cached_end).into());
 
                             if let Some(c) = count.as_mut() {
                                 c.add(cached_count);
@@ -297,7 +268,7 @@ impl Query {
                             }
 
                             // Update query range to exclude the part that is already cached.
-                            query_start = cached_range.end_timestamp_in_seconds;
+                            query_start = cached_end;
                             continue;
                         }
                     }
