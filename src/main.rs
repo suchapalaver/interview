@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     num::NonZeroUsize,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread::{self, JoinHandle},
 };
 
@@ -178,125 +178,127 @@ impl Query {
         let time_slots_map = self.time_slots_map();
 
         for (time_slot, (query_start, query_end)) in &time_slots_map {
-            let mut query_start = *query_start;
-            let mut query_end = *query_end;
+            let (mut query_start, mut query_end) = (*query_start, *query_end);
             let mut to_update: Vec<(TimeRange, Vec<server::Fill>)> = Vec::new();
             let mut slot_done = false;
-            {
+
+            let cache_lock = {
                 let mut cache_lock = cache.0.lock().unwrap();
+                cache_lock.get(time_slot).cloned()
+            };
 
-                if let Some(cached_range_fill_map) = cache_lock.get(time_slot) {
-                    for (cached_range, fills) in cached_range_fill_map.iter() {
-                        if query_start <= cached_range.end_timestamp_in_seconds
-                            && query_end >= cached_range.start_timestamp_in_seconds
+            if let Some(cached_range_fill_map) = cache_lock {
+                let cached_range_fill_map = cached_range_fill_map.read().unwrap();
+                for (cached_range, fills) in cached_range_fill_map.iter() {
+                    if query_start <= cached_range.end_timestamp_in_seconds
+                        && query_end >= cached_range.start_timestamp_in_seconds
+                    {
+                        if query_start >= cached_range.start_timestamp_in_seconds
+                            && query_end <= cached_range.end_timestamp_in_seconds
                         {
-                            if query_start >= cached_range.start_timestamp_in_seconds
-                                && query_end <= cached_range.end_timestamp_in_seconds
-                            {
-                                let cached_count =
-                                    self.count_from_range(fills, (query_start, query_end).into());
+                            let cached_count =
+                                self.count_from_range(fills, (query_start, query_end).into());
 
-                                if let Some(c) = count.as_mut() {
-                                    c.add(cached_count);
-                                } else {
-                                    count = Some(cached_count);
-                                }
-
-                                // Break out if the query range is fully covered by the cached range.
-                                slot_done = true;
-                                break;
-                            } else if query_start <= cached_range.start_timestamp_in_seconds
-                                && query_end >= cached_range.end_timestamp_in_seconds
-                            {
-                                let cached_count = self.count_from_range(
-                                    fills,
-                                    (
-                                        cached_range.start_timestamp_in_seconds,
-                                        cached_range.end_timestamp_in_seconds,
-                                    )
-                                        .into(),
-                                );
-
-                                if let Some(c) = count.as_mut() {
-                                    c.add(cached_count);
-                                } else {
-                                    count = Some(cached_count);
-                                }
-
-                                // Split the query range into before and after the cached range.
-                                let before_fills = server::get_fills_api(
-                                    query_start,
-                                    cached_range.start_timestamp_in_seconds,
-                                )?;
-                                let after_fills = server::get_fills_api(
-                                    cached_range.end_timestamp_in_seconds,
-                                    query_end,
-                                )?;
-
-                                let before_count = self.count_from_range(
-                                    &before_fills,
-                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
-                                );
-                                let after_count = self.count_from_range(
-                                    &after_fills,
-                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
-                                );
-
-                                to_update.push((
-                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
-                                    before_fills,
-                                ));
-                                to_update.push((
-                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
-                                    after_fills,
-                                ));
-
-                                if let Some(c) = count.as_mut() {
-                                    c.add(before_count);
-                                    c.add(after_count);
-                                } else {
-                                    count = Some(before_count);
-                                    count.unwrap().add(after_count);
-                                }
-
-                                // Break out after processing the split ranges.
-                                slot_done = true;
-                                break;
-                            } else if query_start <= cached_range.start_timestamp_in_seconds
-                                && query_end <= cached_range.end_timestamp_in_seconds
-                            {
-                                let cached_count = self.count_from_range(
-                                    fills,
-                                    (cached_range.start_timestamp_in_seconds, query_end).into(),
-                                );
-
-                                if let Some(c) = count.as_mut() {
-                                    c.add(cached_count);
-                                } else {
-                                    count = Some(cached_count);
-                                }
-
-                                // Update query range to exclude the part that is already cached.
-                                query_end = cached_range.start_timestamp_in_seconds;
-                                continue;
-                            } else if query_start >= cached_range.start_timestamp_in_seconds
-                                && query_end >= cached_range.end_timestamp_in_seconds
-                            {
-                                let cached_count = self.count_from_range(
-                                    fills,
-                                    (query_start, cached_range.end_timestamp_in_seconds).into(),
-                                );
-
-                                if let Some(c) = count.as_mut() {
-                                    c.add(cached_count);
-                                } else {
-                                    count = Some(cached_count);
-                                }
-
-                                // Update query range to exclude the part that is already cached.
-                                query_start = cached_range.end_timestamp_in_seconds;
-                                continue;
+                            if let Some(c) = count.as_mut() {
+                                c.add(cached_count);
+                            } else {
+                                count = Some(cached_count);
                             }
+
+                            // Break out if the query range is fully covered by the cached range.
+                            slot_done = true;
+                            break;
+                        } else if query_start <= cached_range.start_timestamp_in_seconds
+                            && query_end >= cached_range.end_timestamp_in_seconds
+                        {
+                            let cached_count = self.count_from_range(
+                                fills,
+                                (
+                                    cached_range.start_timestamp_in_seconds,
+                                    cached_range.end_timestamp_in_seconds,
+                                )
+                                    .into(),
+                            );
+
+                            if let Some(c) = count.as_mut() {
+                                c.add(cached_count);
+                            } else {
+                                count = Some(cached_count);
+                            }
+
+                            // Split the query range into before and after the cached range.
+                            let before_fills = server::get_fills_api(
+                                query_start,
+                                cached_range.start_timestamp_in_seconds,
+                            )?;
+                            let after_fills = server::get_fills_api(
+                                cached_range.end_timestamp_in_seconds,
+                                query_end,
+                            )?;
+
+                            let before_count = self.count_from_range(
+                                &before_fills,
+                                (query_start, cached_range.start_timestamp_in_seconds).into(),
+                            );
+                            let after_count = self.count_from_range(
+                                &after_fills,
+                                (cached_range.end_timestamp_in_seconds, query_end).into(),
+                            );
+
+                            to_update.push((
+                                (query_start, cached_range.start_timestamp_in_seconds).into(),
+                                before_fills,
+                            ));
+                            to_update.push((
+                                (cached_range.end_timestamp_in_seconds, query_end).into(),
+                                after_fills,
+                            ));
+
+                            if let Some(c) = count.as_mut() {
+                                c.add(before_count);
+                                c.add(after_count);
+                            } else {
+                                count = Some(before_count);
+                                count.unwrap().add(after_count);
+                            }
+
+                            // Break out after processing the split ranges.
+                            slot_done = true;
+                            break;
+                        } else if query_start <= cached_range.start_timestamp_in_seconds
+                            && query_end <= cached_range.end_timestamp_in_seconds
+                        {
+                            let cached_count = self.count_from_range(
+                                fills,
+                                (cached_range.start_timestamp_in_seconds, query_end).into(),
+                            );
+
+                            if let Some(c) = count.as_mut() {
+                                c.add(cached_count);
+                            } else {
+                                count = Some(cached_count);
+                            }
+
+                            // Update query range to exclude the part that is already cached.
+                            query_end = cached_range.start_timestamp_in_seconds;
+                            continue;
+                        } else if query_start >= cached_range.start_timestamp_in_seconds
+                            && query_end >= cached_range.end_timestamp_in_seconds
+                        {
+                            let cached_count = self.count_from_range(
+                                fills,
+                                (query_start, cached_range.end_timestamp_in_seconds).into(),
+                            );
+
+                            if let Some(c) = count.as_mut() {
+                                c.add(cached_count);
+                            } else {
+                                count = Some(cached_count);
+                            }
+
+                            // Update query range to exclude the part that is already cached.
+                            query_start = cached_range.end_timestamp_in_seconds;
+                            continue;
                         }
                     }
                 }
@@ -315,16 +317,14 @@ impl Query {
                     count = Some(remaining_count);
                 }
 
-                {
-                    let mut cache_lock = cache.0.lock().unwrap();
+                let mut cache_lock = cache.0.lock().unwrap();
 
-                    if let Some(cache_entry) = cache_lock.get_mut(time_slot) {
-                        cache_entry.insert(range, remaining_fills);
-                    } else {
-                        let mut new_cache_entry = HashMap::new();
-                        new_cache_entry.insert(range, remaining_fills);
-                        cache_lock.put(*time_slot, new_cache_entry);
-                    }
+                if let Some(cache_entry) = cache_lock.get_mut(time_slot) {
+                    cache_entry.write().unwrap().insert(range, remaining_fills);
+                } else {
+                    let mut new_cache_entry = HashMap::new();
+                    new_cache_entry.insert(range, remaining_fills);
+                    cache_lock.put(*time_slot, Arc::new(RwLock::new(new_cache_entry)));
                 }
             }
 
@@ -333,7 +333,7 @@ impl Query {
 
                 if let Some(cache_entry) = cache_lock.get_mut(time_slot) {
                     for (range, fills) in to_update {
-                        cache_entry.insert(range, fills);
+                        cache_entry.write().unwrap().insert(range, fills);
                     }
                 }
             }
@@ -397,7 +397,7 @@ impl CountFilter for &[server::Fill] {
 
 type CountHandles = Vec<JoinHandle<anyhow::Result<Option<Count>>>>;
 
-type Cache = LruCache<Slot, HashMap<TimeRange, Vec<server::Fill>>>;
+type Cache = LruCache<Slot, Arc<RwLock<HashMap<TimeRange, Vec<server::Fill>>>>>;
 struct QueryCache(Arc<Mutex<Cache>>);
 const CACHE_SIZE: usize = 10_000;
 
