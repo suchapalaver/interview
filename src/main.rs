@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 
 pub mod server;
@@ -13,16 +12,12 @@ fn main() -> anyhow::Result<()> {
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~ YOUR CODE HERE ~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-use std::num::NonZeroUsize;
 use std::{
     str::FromStr,
-    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
 use anyhow::anyhow;
-use chrono::DateTime;
-use lru::LruCache;
 use rust_decimal::prelude::ToPrimitive;
 use tracing::{error, instrument, subscriber::set_global_default};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
@@ -41,16 +36,6 @@ fn telemetry() {
 pub enum Count {
     Trades(usize),
     Volume(f64),
-}
-
-impl Count {
-    fn add(&mut self, other: Count) {
-        match (self, other) {
-            (Count::Trades(a), Count::Trades(b)) => *a += b,
-            (Count::Volume(a), Count::Volume(b)) => *a += b,
-            _ => unreachable!("Cannot add different types of counts"),
-        }
-    }
 }
 
 impl From<usize> for Count {
@@ -146,193 +131,63 @@ impl FromStr for Query {
 }
 
 impl Query {
-    fn count_from_range(&self, fills: &[server::Fill], range: TimeRange) -> Count {
+    fn count_from_range(&self, fills: &[server::Fill]) -> Count {
         match self.query_type {
-            QueryType::TradingVolume => fills.trading_volume(range).into(),
-            QueryType::MarketBuys => fills.market_buys(range).into(),
-            QueryType::MarketSells => fills.market_sells(range).into(),
-            QueryType::TakerTrades => fills.taker_trades(range).into(),
+            QueryType::TradingVolume => fills.trading_volume().into(),
+            QueryType::MarketBuys => fills.market_buys().into(),
+            QueryType::MarketSells => fills.market_sells().into(),
+            QueryType::TakerTrades => fills.taker_trades().into(),
         }
     }
 
-    fn time_slots_map(&self) -> HashMap<i64, (i64, i64)> {
-        let mut time_slots_map = HashMap::new();
-        let mut current_time = self.range.start_timestamp_in_seconds;
-        let slot_size = SLOT_SIZE;
-
-        while current_time < self.range.end_timestamp_in_seconds {
-            let half_hour_slot = current_time / slot_size * slot_size;
-            let mut next_time = half_hour_slot + slot_size;
-            if next_time > self.range.end_timestamp_in_seconds {
-                next_time = self.range.end_timestamp_in_seconds;
-            }
-            time_slots_map.insert(half_hour_slot, (current_time, next_time));
-            current_time = next_time;
-        }
-        time_slots_map
-    }
-
-    pub fn get_count(&self, cache: &QueryCache) -> anyhow::Result<Option<Count>> {
-        let mut count: Option<Count> = None;
-
-        let time_slots_map = self.time_slots_map();
-
-        for (time_slot, (query_start, query_end)) in &time_slots_map {
-            let mut query_start = *query_start;
-            let mut query_end = *query_end;
-            let mut to_update: Vec<(TimeRange, Vec<server::Fill>)> = Vec::new();
-            {
-                // Acquire a write lock on the cache for the specific time slot.
-                let mut cache_lock = cache.0.lock().unwrap();
-
-                if let Some(cached_range_fill_map) = cache_lock.get(time_slot) {
-                    for (cached_range, fills) in cached_range_fill_map.iter() {
-                        if query_start <= cached_range.end_timestamp_in_seconds
-                            && query_end >= cached_range.start_timestamp_in_seconds
-                        {
-                            let cached_count = self.count_from_range(fills, *cached_range);
-
-                            if let Some(c) = count.as_mut() {
-                                c.add(cached_count);
-                            } else {
-                                count = Some(cached_count);
-                            }
-
-                            if query_start >= cached_range.start_timestamp_in_seconds
-                                && query_end <= cached_range.end_timestamp_in_seconds
-                            {
-                                // Break out if the query range is fully covered by the cached range.
-                                break;
-                            } else if query_start <= cached_range.start_timestamp_in_seconds
-                                && query_end >= cached_range.end_timestamp_in_seconds
-                            {
-                                // Split the query range into before and after the cached range.
-                                let before_fills = server::get_fills_api(
-                                    query_start,
-                                    cached_range.start_timestamp_in_seconds,
-                                )?;
-                                let after_fills = server::get_fills_api(
-                                    cached_range.end_timestamp_in_seconds,
-                                    query_end,
-                                )?;
-
-                                let before_count = self.count_from_range(
-                                    &before_fills,
-                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
-                                );
-                                let after_count = self.count_from_range(
-                                    &after_fills,
-                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
-                                );
-
-                                to_update.push((
-                                    (query_start, cached_range.start_timestamp_in_seconds).into(),
-                                    before_fills,
-                                ));
-                                to_update.push((
-                                    (cached_range.end_timestamp_in_seconds, query_end).into(),
-                                    after_fills,
-                                ));
-
-                                if let Some(c) = count.as_mut() {
-                                    c.add(before_count);
-                                    c.add(after_count);
-                                } else {
-                                    count = Some(before_count);
-                                    count.unwrap().add(after_count);
-                                }
-
-                                // Break out after processing the split ranges.
-                                break;
-                            } else if query_start <= cached_range.start_timestamp_in_seconds
-                                && query_end <= cached_range.end_timestamp_in_seconds
-                            {
-                                // Update query range to exclude the part that is already cached.
-                                query_end = cached_range.start_timestamp_in_seconds;
-                                continue;
-                            } else if query_start >= cached_range.start_timestamp_in_seconds
-                                && query_end >= cached_range.end_timestamp_in_seconds
-                            {
-                                // Update query range to exclude the part that is already cached.
-                                query_start = cached_range.end_timestamp_in_seconds;
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-
-            let remaining_fills = server::get_fills_api(query_start, query_end)?;
-
-            let remaining_count =
-                self.count_from_range(&remaining_fills, (query_start, query_end).into());
-
-            if let Some(c) = count.as_mut() {
-                c.add(remaining_count);
-            } else {
-                count = Some(remaining_count);
-            }
-
-            let mut cache_lock = cache.0.lock().unwrap();
-
-            let cache_entry = cache_lock.get_or_insert_mut(*time_slot, HashMap::new);
-
-            for (range, fills) in to_update {
-                cache_entry.insert(range, fills);
-            }
-        }
+    pub fn get_count(&self) -> anyhow::Result<Count> {
+        let fills = server::get_fills_api(
+            self.range.start_timestamp_in_seconds,
+            self.range.end_timestamp_in_seconds,
+        )?;
+        let count = self.count_from_range(&fills);
 
         Ok(count)
     }
 }
 
 trait CountFilter {
-    fn filter_fills<F>(&self, range: TimeRange, filter_func: F) -> usize
+    fn filter_fills<F>(&self, filter_func: F) -> usize
     where
         F: Fn(&server::Fill) -> bool;
 
-    fn taker_trades(&self, range: TimeRange) -> usize;
-    fn market_buys(&self, range: TimeRange) -> usize;
-    fn market_sells(&self, range: TimeRange) -> usize;
-    fn trading_volume(&self, range: TimeRange) -> f64;
+    fn taker_trades(&self) -> usize;
+    fn market_buys(&self) -> usize;
+    fn market_sells(&self) -> usize;
+    fn trading_volume(&self) -> f64;
 }
 
 impl CountFilter for &[server::Fill] {
-    fn filter_fills<F>(&self, range: TimeRange, filter_func: F) -> usize
+    fn filter_fills<F>(&self, filter_func: F) -> usize
     where
         F: Fn(&server::Fill) -> bool,
     {
         self.iter()
-            .filter(|fill| {
-                fill.time > DateTime::from_timestamp(range.start_timestamp_in_seconds, 0).unwrap()
-                    && fill.time
-                        <= DateTime::from_timestamp(range.end_timestamp_in_seconds, 0).unwrap()
-            })
             .filter(|fill| filter_func(fill))
             .map(|v| v.sequence_number)
             .collect::<std::collections::HashSet<_>>()
             .len()
     }
 
-    fn taker_trades(&self, range: TimeRange) -> usize {
-        self.filter_fills(range, |_| true)
+    fn taker_trades(&self) -> usize {
+        self.filter_fills(|_| true)
     }
 
-    fn market_buys(&self, range: TimeRange) -> usize {
-        self.filter_fills(range, |fill| fill.direction == 1)
+    fn market_buys(&self) -> usize {
+        self.filter_fills(|fill| fill.direction == 1)
     }
 
-    fn market_sells(&self, range: TimeRange) -> usize {
-        self.filter_fills(range, |fill| fill.direction == -1)
+    fn market_sells(&self) -> usize {
+        self.filter_fills(|fill| fill.direction == -1)
     }
 
-    fn trading_volume(&self, range: TimeRange) -> f64 {
+    fn trading_volume(&self) -> f64 {
         self.iter()
-            .filter(|fill| {
-                fill.time > DateTime::from_timestamp(range.start_timestamp_in_seconds, 0).unwrap()
-                    && fill.time
-                        <= DateTime::from_timestamp(range.end_timestamp_in_seconds, 0).unwrap()
-            })
             .filter_map(|fill| (fill.price * fill.quantity).to_f64())
             .sum()
     }
@@ -340,16 +195,8 @@ impl CountFilter for &[server::Fill] {
 
 type CountHandles = Vec<JoinHandle<anyhow::Result<Option<Count>>>>;
 
-type Cache = LruCache<Slot, HashMap<TimeRange, Vec<server::Fill>>>;
-struct QueryCache(Arc<Mutex<Cache>>);
-const CACHE_SIZE: usize = 10_000;
-
-type Slot = i64;
-const SLOT_SIZE: i64 = 4500;
-
 pub struct Processor {
     handles: CountHandles,
-    cache: QueryCache,
 }
 
 impl Drop for Processor {
@@ -377,15 +224,10 @@ impl Processor {
         telemetry();
         Processor {
             handles: Vec::new(),
-            cache: QueryCache(Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(CACHE_SIZE).unwrap(),
-            )))),
         }
     }
 
     pub fn process_query(&mut self, query: String) {
-        let cache = QueryCache(Arc::clone(&self.cache.0));
-
         let handle = thread::spawn(move || -> anyhow::Result<Option<Count>> {
             let query = match Query::from_str(&query) {
                 Ok(query) => query,
@@ -394,8 +236,8 @@ impl Processor {
                     return Ok(None);
                 }
             };
-            let count = query.get_count(&cache)?;
-            Ok(count)
+            let count = query.get_count()?;
+            Ok(Some(count))
         });
         self.handles.push(handle);
     }
