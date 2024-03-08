@@ -181,7 +181,7 @@ impl Query {
             let mut query_start = *query_start;
             let mut query_end = *query_end;
             let mut to_update: Vec<(TimeRange, Vec<server::Fill>)> = Vec::new();
-            let mut done = false;
+            let mut slot_done = false;
             {
                 let mut cache_lock = cache.0.lock().unwrap();
 
@@ -203,7 +203,7 @@ impl Query {
                                 }
 
                                 // Break out if the query range is fully covered by the cached range.
-                                done = true;
+                                slot_done = true;
                                 break;
                             } else if query_start <= cached_range.start_timestamp_in_seconds
                                 && query_end >= cached_range.end_timestamp_in_seconds
@@ -260,7 +260,7 @@ impl Query {
                                 }
 
                                 // Break out after processing the split ranges.
-                                done = true;
+                                slot_done = true;
                                 break;
                             } else if query_start <= cached_range.start_timestamp_in_seconds
                                 && query_end <= cached_range.end_timestamp_in_seconds
@@ -302,7 +302,7 @@ impl Query {
                 }
             }
 
-            if !done {
+            if !slot_done {
                 let remaining_fills = server::get_fills_api(query_start, query_end)?;
 
                 let range = (query_start, query_end).into();
